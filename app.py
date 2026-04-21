@@ -1,5 +1,5 @@
 import streamlit as st
-import ollama
+from openai import OpenAI
 import pystac_client
 import planetary_computer as pc
 import rasterio
@@ -7,20 +7,26 @@ from rasterio.windows import from_bounds
 from rasterio.warp import transform_bounds
 import numpy as np
 from PIL import Image
-import io, base64, tempfile
+import io, base64
 
 st.set_page_config(page_title="NAIP Chat", layout="wide")
 st.title("🛰️ Chat with NAIP Imagery — Qwen3-VL")
 
+# ---------- Ollama Cloud Client ----------
+client = OpenAI(
+    base_url="https://api.ollama.com/v1",
+    api_key=st.secrets["OLLAMA_API_KEY"]
+)
+
 # ---------- Sidebar ----------
 with st.sidebar:
     st.header("📍 Area of Interest")
-    lat  = st.number_input("Latitude",  value=39.2737, format="%.4f")
-    lon  = st.number_input("Longitude", value=-76.7316, format="%.4f")
-    buf  = st.slider("Buffer (degrees)", 0.001, 0.01, 0.003, step=0.001)
+    lat = st.number_input("Latitude",  value=39.2737, format="%.4f")
+    lon = st.number_input("Longitude", value=-76.7316, format="%.4f")
+    buf = st.slider("Buffer (degrees)", 0.001, 0.01, 0.003, step=0.001)
     fetch_btn = st.button("🔍 Fetch NAIP Tile")
 
-# ---------- NAIP fetch via Planetary Computer ----------
+# ---------- NAIP fetch ----------
 def fetch_naip(lat, lon, buf):
     catalog = pystac_client.Client.open(
         "https://planetarycomputer.microsoft.com/api/stac/v1",
@@ -35,27 +41,23 @@ def fetch_naip(lat, lon, buf):
     )
     items = list(results.items())
     if not items:
-        raise ValueError("No NAIP tiles found for this location/date.")
-    
-    item = items[0]
-    href = item.assets["image"].href
+        raise ValueError("No NAIP tiles found for this location.")
 
+    href = items[0].assets["image"].href
     with rasterio.open(href) as src:
-        # Reproject bbox to image CRS
         bounds = transform_bounds("EPSG:4326", src.crs, *bbox)
         window = from_bounds(*bounds, transform=src.transform)
-        # Read RGB bands (1=R, 2=G, 3=B)
         data = src.read([1, 2, 3], window=window)
 
-    # Normalize to uint8
-    data = np.moveaxis(data, 0, -1)  # CHW -> HWC
+    data = np.moveaxis(data, 0, -1)
     data = np.clip(data, 0, 255).astype(np.uint8)
     img = Image.fromarray(data)
-    
+
     buf_io = io.BytesIO()
     img.save(buf_io, format="PNG")
     buf_io.seek(0)
-    return img, base64.b64encode(buf_io.read()).decode("utf-8")
+    b64 = base64.b64encode(buf_io.read()).decode("utf-8")
+    return img, b64
 
 # ---------- Session state ----------
 if "messages"  not in st.session_state: st.session_state.messages  = []
@@ -70,7 +72,7 @@ if fetch_btn:
             st.session_state.naip_img = img
             st.session_state.naip_b64 = b64
             st.session_state.messages = []
-            st.success(f"Loaded tile — {img.width}×{img.height} px")
+            st.success(f"Loaded — {img.width}×{img.height} px")
         except Exception as e:
             st.error(f"Error: {e}")
 
@@ -80,14 +82,13 @@ col1, col2 = st.columns([1, 1])
 with col1:
     st.subheader("🗺️ NAIP Tile")
     if st.session_state.naip_img:
-        st.image(st.session_state.naip_img, use_column_width=True)
+        st.image(st.session_state.naip_img, width=600)   # fixed deprecation
     else:
         st.info("Enter coordinates and click Fetch.")
 
 with col2:
     st.subheader("💬 Ask Qwen3-VL")
 
-    # Render chat history
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
@@ -97,28 +98,33 @@ with col2:
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # Build Ollama message — attach image only on first message
-        ollama_messages = []
+        # Build messages — image only on first turn
+        openai_messages = []
         for i, m in enumerate(st.session_state.messages):
             if i == 0:
-                ollama_messages.append({
+                openai_messages.append({
                     "role": "user",
-                    "content": m["content"],
-                    "images": [st.session_state.naip_b64]
+                    "content": [
+                        {"type": "text", "text": m["content"]},
+                        {"type": "image_url", "image_url": {
+                            "url": f"data:image/png;base64,{st.session_state.naip_b64}"
+                        }}
+                    ]
                 })
             else:
-                ollama_messages.append({"role": m["role"], "content": m["content"]})
+                openai_messages.append({"role": m["role"], "content": m["content"]})
 
         with st.chat_message("assistant"):
             response_box = st.empty()
             full_response = ""
-            # Stream response
-            for chunk in ollama.chat(
+            stream = client.chat.completions.create(
                 model="qwen3-vl:235b-cloud",
-                messages=ollama_messages,
+                messages=openai_messages,
                 stream=True
-            ):
-                full_response += chunk["message"]["content"]
+            )
+            for chunk in stream:
+                delta = chunk.choices[0].delta.content or ""
+                full_response += delta
                 response_box.markdown(full_response + "▌")
             response_box.markdown(full_response)
 
