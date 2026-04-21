@@ -12,7 +12,7 @@ import io, base64
 st.set_page_config(page_title="NAIP Chat", layout="wide")
 st.title("🛰️ Chat with NAIP Imagery — Qwen3-VL")
 
-# ---------- Ollama Cloud Client from secrets ----------
+# ---------- Ollama Cloud Client ----------
 client = OpenAI(
     base_url=f"{st.secrets['OLLAMA_HOST']}/v1",
     api_key=st.secrets["OLLAMA_API_KEY"]
@@ -26,6 +26,19 @@ with st.sidebar:
     lon = st.number_input("Longitude", value=-76.7316, format="%.4f")
     buf = st.slider("Buffer (degrees)", 0.001, 0.01, 0.003, step=0.001)
     fetch_btn = st.button("🔍 Fetch NAIP Tile")
+    st.divider()
+    system_prompt = st.text_area(
+        "🧠 System Prompt",
+        height=200,
+        value="""You are an expert remote sensing scientist and Earth observation analyst with deep knowledge of:
+- Aerial and satellite imagery interpretation (NAIP, Sentinel, Landsat, MODIS)
+- Land cover and land use classification
+- Urban, agricultural, and environmental feature detection
+- Spectral analysis and image characteristics
+- Geospatial context for the continental United States
+
+When analyzing imagery, be specific about what you observe — note land cover types, infrastructure, vegetation patterns, water features, impervious surfaces, and any anomalies. Always relate observations to real-world geographic context where possible."""
+    )
 
 # ---------- NAIP fetch ----------
 def fetch_naip(lat, lon, buf):
@@ -99,8 +112,8 @@ with col2:
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # Build messages — image embedded only on first turn
-        openai_messages = []
+        # Build messages with system prompt — image on first turn only
+        openai_messages = [{"role": "system", "content": system_prompt}]
         for i, m in enumerate(st.session_state.messages):
             if i == 0:
                 openai_messages.append({
