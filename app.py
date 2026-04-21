@@ -12,11 +12,12 @@ import io, base64
 st.set_page_config(page_title="NAIP Chat", layout="wide")
 st.title("🛰️ Chat with NAIP Imagery — Qwen3-VL")
 
-# ---------- Ollama Cloud Client ----------
+# ---------- Ollama Cloud Client from secrets ----------
 client = OpenAI(
-    base_url="https://api.ollama.com/v1",
+    base_url=f"{st.secrets['OLLAMA_HOST']}/v1",
     api_key=st.secrets["OLLAMA_API_KEY"]
 )
+MODEL = st.secrets["OLLAMA_MODEL"]
 
 # ---------- Sidebar ----------
 with st.sidebar:
@@ -60,9 +61,9 @@ def fetch_naip(lat, lon, buf):
     return img, b64
 
 # ---------- Session state ----------
-if "messages"  not in st.session_state: st.session_state.messages  = []
-if "naip_img"  not in st.session_state: st.session_state.naip_img  = None
-if "naip_b64"  not in st.session_state: st.session_state.naip_b64  = None
+if "messages" not in st.session_state: st.session_state.messages = []
+if "naip_img" not in st.session_state: st.session_state.naip_img = None
+if "naip_b64" not in st.session_state: st.session_state.naip_b64 = None
 
 # ---------- Fetch ----------
 if fetch_btn:
@@ -82,7 +83,7 @@ col1, col2 = st.columns([1, 1])
 with col1:
     st.subheader("🗺️ NAIP Tile")
     if st.session_state.naip_img:
-        st.image(st.session_state.naip_img, width=600)   # fixed deprecation
+        st.image(st.session_state.naip_img, width=600)
     else:
         st.info("Enter coordinates and click Fetch.")
 
@@ -98,7 +99,7 @@ with col2:
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # Build messages — image only on first turn
+        # Build messages — image embedded only on first turn
         openai_messages = []
         for i, m in enumerate(st.session_state.messages):
             if i == 0:
@@ -117,15 +118,18 @@ with col2:
         with st.chat_message("assistant"):
             response_box = st.empty()
             full_response = ""
-            stream = client.chat.completions.create(
-                model="qwen3-vl:235b-cloud",
-                messages=openai_messages,
-                stream=True
-            )
-            for chunk in stream:
-                delta = chunk.choices[0].delta.content or ""
-                full_response += delta
-                response_box.markdown(full_response + "▌")
-            response_box.markdown(full_response)
+            try:
+                stream = client.chat.completions.create(
+                    model=MODEL,
+                    messages=openai_messages,
+                    stream=True
+                )
+                for chunk in stream:
+                    delta = chunk.choices[0].delta.content or ""
+                    full_response += delta
+                    response_box.markdown(full_response + "▌")
+                response_box.markdown(full_response)
+            except Exception as e:
+                st.error(f"Model error: {e}")
 
         st.session_state.messages.append({"role": "assistant", "content": full_response})
